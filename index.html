@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>單字播放器</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500&display=swap" rel="stylesheet">
+<script>
+let allGroups=[], playlist=[], currentIndex=0, isPlaying=false, loopMode=false, speed=1.0, stopFlag=false, activeGroupIds=[];
+let enVoice=null, zhVoice=null;
+
+function loadVoices(){
+  const v=speechSynthesis.getVoices();
+  // Auto defaults
+  enVoice=v.find(x=>x.lang.startsWith('en')&&x.name.includes('Google'))||v.find(x=>x.lang.startsWith('en-US'))||v.find(x=>x.lang.startsWith('en'));
+  zhVoice=v.find(x=>x.lang==='zh-TW'&&x.name.includes('Google'))||v.find(x=>x.lang==='zh-TW')||v.find(x=>x.lang.startsWith('zh'));
+  // Populate selects
+  const enSel=document.getElementById('sel-en');
+  const zhSel=document.getElementById('sel-zh');
+  if(!enSel||!zhSel)return;
+  const enVoices=v.filter(x=>x.lang.startsWith('en'));
+  const zhVoices=v.filter(x=>x.lang.startsWith('zh'));
+  enSel.innerHTML=enVoices.map(x=>`<option value="${x.name}" ${enVoice&&x.name===enVoice.name?'selected':''}>${x.name} (${x.lang})</option>`).join('');
+  zhSel.innerHTML=zhVoices.map(x=>`<option value="${x.name}" ${zhVoice&&x.name===zhVoice.name?'selected':''}>${x.name} (${x.lang})</option>`).join('');
+}
+speechSynthesis.addEventListener('voiceschanged',loadVoices);
+
+function applyVoices(){
+  const v=speechSynthesis.getVoices();
+  const enName=document.getElementById('sel-en').value;
+  const zhName=document.getElementById('sel-zh').value;
+  enVoice=v.find(x=>x.name===enName)||enVoice;
+  zhVoice=v.find(x=>x.name===zhName)||zhVoice;
+}
+
+function testVoice(lang){
+  applyVoices();
+  if(lang==='en') speak('Hello, this is a test sentence.','en-US',1);
+  else speak('你好，這是測試聲音。','zh-TW',1);
+}
+
+function speak(text,lang,rate){
+  return new Promise(resolve=>{
+    if(stopFlag){resolve();return;}
+    const u=new SpeechSynthesisUtterance(text);
+    u.rate=rate||speed; u.lang=lang;
+    if(lang.startsWith('en')&&enVoice)u.voice=enVoice;
+    if(lang.startsWith('zh')&&zhVoice)u.voice=zhVoice;
+    u.onend=resolve; u.onerror=resolve;
+    speechSynthesis.speak(u);
+  });
+}
+function wait(ms){return new Promise(r=>setTimeout(r,ms));}
+
+async function spellWord(word){
+  const letters=word.toUpperCase().replace(/[^A-Z]/g,'').split('');
+  for(const ch of letters){
+    if(stopFlag)return;
+    await speak(ch.toLowerCase(),'en-US',speed*2.5);
+    await wait(0);
+  }
+}
+
+function setDisplay(main,label,sub){
+  document.getElementById('now-playing').innerHTML=`
+    <div class="now-label">${label}</div>
+    <div class="now-word">${main||'—'}</div>
+    ${sub?`<div class="now-sub">${sub}`:''}
+  `;
+}
+
+async function playOne(idx){
+  if(idx>=playlist.length)return;
+  const w=playlist[idx];
+  currentIndex=idx; highlightCard(idx); updateProgressBar(idx);
+  setDisplay(w.word,'英文單字',''); await speak(w.word,'en-US'); if(stopFlag)return; await wait(300);
+  setDisplay(w.word.toUpperCase().split('').filter(c=>c!==' ').join(' · '),'拼字','');
+  await spellWord(w.word); if(stopFlag)return; await wait(300);
+  if(w.zh){setDisplay(w.zh,'中文意思','');await speak(w.zh,'zh-TW');if(stopFlag)return;await wait(300);}
+  if(w.sentence){setDisplay(w.sentence,'英文例句','');await speak(w.sentence,'en-US');if(stopFlag)return;await wait(300);}
+  if(w.sentenceZh){setDisplay(w.sentenceZh,'例句中文','');await speak(w.sentenceZh,'zh-TW');if(stopFlag)return;await wait(300);}
+  await wait(600);
+}
+
+async function playAll(startIdx){
+  isPlaying=true; stopFlag=false;
+  document.getElementById('btn-play').textContent='⏸';
+  document.getElementById('btn-play').classList.add('playing');
+  for(let i=startIdx;i<playlist.length;i++){if(stopFlag)break;await playOne(i);}
+  if(!stopFlag&&loopMode&&playlist.length>0){playAll(0);return;}
+  isPlaying=false; stopFlag=false;
+  document.getElementById('btn-play').textContent='▶';
+  document.getElementById('btn-play').classList.remove('playing');
+  if(!loopMode)setDisplay('','播放完畢 ✓','');
+}
+
+function togglePlay(){applyVoices();
+  if(playlist.length===0)return;
+  if(isPlaying){stopFlag=true;speechSynthesis.cancel();isPlaying=false;document.getElementById('btn-play').textContent='▶';document.getElementById('btn-play').classList.remove('playing');}
+  else{playAll(currentIndex);}
+}
+function stopCurrent(){stopFlag=true;speechSynthesis.cancel();isPlaying=false;document.getElementById('btn-play').textContent='▶';document.getElementById('btn-play').classList.remove('playing');}
+function prevWord(){stopCurrent();currentIndex=Math.max(0,currentIndex-1);highlightCard(currentIndex);updateProgressBar(currentIndex);}
+function nextWord(){stopCurrent();currentIndex=Math.min(playlist.length-1,currentIndex+1);highlightCard(currentIndex);updateProgressBar(currentIndex);}
+function toggleLoop(){loopMode=!loopMode;document.getElementById('loop-btn').classList.toggle('active',loopMode);}
+function updateSpeed(){speed=parseFloat(document.getElementById('speed-select').value);}
+
+function buildPlaylist(groupIds){
+  stopCurrent(); activeGroupIds=groupIds;
+  playlist=groupIds.flatMap(i=>allGroups[i]?.words||[]);
+  currentIndex=0; renderPlaylist(); renderGroups();
+  showTab('play');
+}
+function playToday(groupIdx){buildPlaylist([groupIdx]);}
+function playWeek(weekIdx){
+  const start=weekIdx*7, ids=[];
+  for(let i=start;i<start+7&&i<allGroups.length;i++)ids.push(i);
+  buildPlaylist(ids);
+}
+function playAllWords(){buildPlaylist(allGroups.map((_,i)=>i));}
+
+function importBulk(){
+  const raw=document.getElementById('inp-bulk').value.trim();
+  const label=document.getElementById('inp-group-label').value.trim()||`第 ${allGroups.length+1} 天`;
+  const week=parseInt(document.getElementById('inp-week').value)||1;
+  const month=parseInt(document.getElementById('inp-month').value)||1;
+  if(!raw)return;
+  const parsed=parseWords(raw);
+  if(parsed.length===0){document.getElementById('bulk-result').textContent='⚠️ 找不到可匯入的單字';return;}
+  allGroups.push({label,week,month,words:parsed});
+  document.getElementById('inp-bulk').value='';
+  document.getElementById('inp-group-label').value='';
+  document.getElementById('bulk-result').textContent=`✓ 已新增「${label}」到第 ${month} 月第 ${week} 週，共 ${parsed.length} 個單字`;
+  buildPlaylist([allGroups.length-1]);
+  renderGroups();
+}
+
+function parseWords(raw){
+  const results=[];
+  const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l);
+  const isTab=lines.some(l=>l.includes('\t'));
+  if(isTab){
+    for(const line of lines){
+      const cols=line.split('\t').map(c=>c.trim());
+      if(cols[0]==='#'||cols[1]==='單字')continue;
+      let word,zh,sentence;
+      if(/^\d+$/.test(cols[0])){word=cols[1];zh=cols[4];sentence=cols[5]||'';}
+      else{word=cols[0];zh=cols[3];sentence=cols[4]||'';}
+      if(!word)continue;
+      results.push({word,zh:zh||'',sentence:sentence||'',sentenceZh:''});
+    }
+  } else {
+    const entries=raw.split(/(?=\d+[a-zA-Z])/).filter(e=>/^\d+[a-zA-Z]/.test(e));
+    const pat=new RegExp('^(\\d+)(.+?)(/[^/]+/)(verb|noun|adj|adv|prep|conj|pron|det|int)(.+?)([A-Z].+)$');
+    for(const e of entries){
+      const m=e.match(pat);
+      if(m){
+        const word=m[2].trim();
+        const zh=m[5].replace(/[a-zA-Z\s]/g,'').trim();
+        const sentence=m[6].trim();
+        results.push({word,zh,sentence,sentenceZh:''});
+      }
+    }
+  }
+  return results;
+}
+
+function deleteGroup(idx){
+  if(!confirm(`確定刪除「${allGroups[idx].label}」？`))return;
+  allGroups.splice(idx,1);
+  buildPlaylist([]);
+  renderGroups();
+}
+
+function renderGroups(){
+  const el=document.getElementById('group-list');
+  if(allGroups.length===0){
+    el.innerHTML=`<div class="empty-state"><div style="font-size:28px">📦</div>還沒有任何單字組<br>先匯入第一天的單字吧</div>`;
+    return;
+  }
+  // Group by month > week
+  const months={};
+  allGroups.forEach((g,i)=>{
+    const m=g.month||1, w=g.week||1;
+    if(!months[m])months[m]={};
+    if(!months[m][w])months[m][w]=[];
+    months[m][w].push({g,i});
+  });
+  const total=allGroups.reduce((s,g)=>s+g.words.length,0);
+  let html=`<div class="all-bar"><span style="color:var(--muted);font-size:12px;">共 ${allGroups.length} 天 · ${total} 個單字</span><button class="btn-all" onclick="playAllWords()">▶ 全部複習</button></div>`;
+  Object.keys(months).sort((a,b)=>a-b).forEach(mo=>{
+    const monthData=months[mo];
+    const monthIds=Object.values(monthData).flat().map(d=>d.i);
+    const monthTotal=monthIds.reduce((s,i)=>s+allGroups[i].words.length,0);
+    const monthDays=Object.values(monthData).flat().length;
+    html+=`<div class="month-block">
+      <div class="month-header">
+        <span class="month-title">第 ${mo} 月</span>
+        <span class="week-meta">${monthDays} 天 · ${monthTotal} 字</span>
+        <button class="btn-month-play" onclick="buildPlaylist([${monthIds.join(',')}])">▶ 播本月</button>
+      </div>`;
+    Object.keys(monthData).sort((a,b)=>a-b).forEach(wk=>{
+      const days=monthData[wk];
+      const totalW=days.reduce((s,d)=>s+d.g.words.length,0);
+      const weekIds=days.map(d=>d.i);
+      html+=`<div class="week-block">
+        <div class="week-header">
+          <span class="week-title">第 ${wk} 週</span>
+          <span class="week-meta">${days.length} 天 · ${totalW} 字</span>
+          <button class="btn-week-play" onclick="buildPlaylist([${weekIds.join(',')}])">▶ 播本週</button>
+        </div>
+        <div class="day-grid">
+          ${days.map(({g,i})=>`
+            <div class="day-card ${activeGroupIds.includes(i)?'active':''}" id="grp-${i}">
+              <div class="day-top"><span class="day-label">${g.label}</span><span class="day-count">${g.words.length} 字</span></div>
+              <div class="day-actions">
+                <button class="btn-day-play" onclick="playToday(${i})">▶ 播放</button>
+                <button class="btn-icon danger" onclick="deleteGroup(${i})">✕</button>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+    });
+    html+=`</div>`;
+  });
+  el.innerHTML=html;
+}
+
+function renderPlaylist(){
+  const el=document.getElementById('playlist');
+  if(playlist.length===0){
+    el.innerHTML=`<div class="empty-state"><div style="font-size:24px">👆</div>選擇要播放的單字組</div>`;
+    document.getElementById('now-playing').innerHTML=`<div style="font-size:28px">🎧</div><div class="now-label">選擇單字組後開始播放</div>`;
+    document.getElementById('progress-bar').style.width='0%';
+    return;
+  }
+  el.innerHTML=playlist.map((w,i)=>`
+    <div class="word-card ${i===currentIndex?'active':''}" onclick="jumpTo(${i})" id="wc-${i}">
+      <div class="word-num">${String(i+1).padStart(2,'0')}</div>
+      <div class="word-info"><div class="word-en">${w.word}</div><div class="word-zh">${w.zh||'—'}</div></div>
+    </div>`).join('');
+  updateProgressBar(currentIndex);
+}
+
+function jumpTo(idx){stopCurrent();currentIndex=idx;highlightCard(idx);updateProgressBar(idx);}
+function highlightCard(idx){
+  document.querySelectorAll('.word-card').forEach((c,i)=>c.classList.toggle('active',i===idx));
+  const card=document.getElementById(`wc-${idx}`);
+  if(card)card.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function updateProgressBar(idx){
+  const pct=playlist.length>1?(idx/(playlist.length-1))*100:(playlist.length?100:0);
+  document.getElementById('progress-bar').style.width=pct+'%';
+}
+
+function showTab(tab){
+  ['import','manage','play'].forEach(t=>{
+    document.getElementById(`panel-${t}`).style.display=t===tab?'':'none';
+    document.getElementById(`tab-${t}`).classList.toggle('tab-active',t===tab);
+  });
+}
+
+document.addEventListener('DOMContentLoaded',()=>{loadVoices();renderGroups();renderPlaylist();showTab('import');});
+</script>
+<style>
+:root{--bg:#0d0d0d;--surface:#161616;--surface2:#1f1f1f;--border:#2a2a2a;--accent:#c8f04a;--accent2:#4af0c8;--text:#f0ede6;--muted:#666;--danger:#f04a4a;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Noto Sans TC',sans-serif;font-weight:300;min-height:100vh;display:flex;flex-direction:column;align-items:center;}
+header{width:100%;padding:28px 24px 0;display:flex;align-items:baseline;gap:12px;}
+header h1{font-family:'DM Serif Display',serif;font-size:26px;color:var(--accent);}
+header span{font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;}
+.container{width:100%;max-width:680px;padding:20px 16px 100px;display:flex;flex-direction:column;gap:16px;}
+.tabs{display:flex;gap:6px;}
+.tab-btn{background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:'DM Mono',monospace;font-size:11px;letter-spacing:1px;padding:8px 16px;border-radius:8px;cursor:pointer;transition:all .15s;}
+.tab-btn:hover{color:var(--text);}
+.tab-btn.tab-active{background:#1a2a00;border-color:var(--accent);color:var(--accent);}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:14px;}
+.panel h2{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);}
+input[type=text],textarea{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'DM Mono',monospace;font-size:13px;padding:10px 14px;outline:none;transition:border-color .2s;width:100%;}
+input[type=text]:focus,textarea:focus{border-color:var(--accent);}
+input::placeholder,textarea::placeholder{color:var(--muted);font-size:12px;}
+textarea{resize:vertical;min-height:130px;line-height:1.6;}
+button{cursor:pointer;border:none;border-radius:8px;font-family:'DM Mono',monospace;font-size:12px;padding:9px 18px;transition:all .15s;}
+.btn-primary{background:var(--accent);color:#0d0d0d;font-weight:500;}
+.btn-primary:hover{background:#d4ff5a;}
+.btn-ghost{background:var(--surface2);color:var(--muted);border:1px solid var(--border);}
+.btn-ghost:hover{color:var(--text);}
+.btn-row{display:flex;gap:8px;}
+.btn-icon{background:transparent;color:var(--muted);padding:4px 8px;font-size:13px;border-radius:6px;}
+.btn-icon:hover{background:var(--surface2);}
+.btn-icon.danger:hover{color:var(--danger);}
+.result-msg{font-size:12px;color:var(--accent);min-height:18px;}
+.all-bar{display:flex;justify-content:space-between;align-items:center;padding-bottom:4px;}
+.btn-all{background:#1a2a00;color:var(--accent);border:1px solid var(--accent);font-size:11px;padding:7px 14px;}
+.btn-all:hover{background:#243800;}
+.week-block{display:flex;flex-direction:column;gap:8px;}
+.week-header{display:flex;align-items:center;gap:10px;}
+.week-title{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;color:var(--accent2);text-transform:uppercase;}
+.week-meta{font-size:11px;color:var(--muted);flex:1;}
+.btn-week-play{background:#072a24;color:var(--accent2);border:1px solid var(--accent2);font-size:11px;padding:5px 12px;}
+.btn-week-play:hover{background:#0d3d35;}
+.day-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;}
+.day-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;transition:border-color .2s;}
+.day-card.active{border-color:var(--accent);background:#161f07;}
+.day-top{display:flex;justify-content:space-between;align-items:center;}
+.day-label{font-family:'DM Serif Display',serif;font-size:14px;color:var(--text);}
+.day-count{font-family:'DM Mono',monospace;font-size:10px;color:var(--muted);}
+.day-actions{display:flex;gap:6px;align-items:center;}
+.btn-day-play{background:var(--accent);color:#0d0d0d;font-size:10px;padding:5px 10px;flex:1;}
+.btn-day-play:hover{background:#d4ff5a;}
+.word-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:border-color .2s;}
+.word-card:hover{border-color:#3a3a3a;}
+.word-card.active{border-color:var(--accent);background:#161f07;}
+.word-num{font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);min-width:22px;}
+.word-info{flex:1;}
+.word-en{font-family:'DM Serif Display',serif;font-size:17px;}
+.word-zh{font-size:12px;color:var(--muted);margin-top:2px;}
+.player{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px;position:sticky;bottom:16px;}
+.now-playing{text-align:center;min-height:78px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;margin-bottom:14px;}
+.now-word{font-family:'DM Serif Display',serif;font-size:30px;color:var(--accent);}
+.now-label{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;}
+.now-sub{font-size:13px;color:#aaa;max-width:360px;}
+.progress-bar-wrap{background:var(--surface2);border-radius:4px;height:3px;margin-bottom:14px;overflow:hidden;}
+.progress-bar{height:100%;background:var(--accent);width:0%;transition:width .3s;}
+.controls{display:flex;align-items:center;justify-content:center;gap:10px;}
+.btn-ctrl{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center;font-size:15px;padding:0;}
+.btn-ctrl:hover{background:#2a2a2a;}
+.btn-play{background:var(--accent)!important;color:#0d0d0d!important;border-color:var(--accent)!important;width:54px!important;height:54px!important;font-size:18px!important;}
+.btn-play:hover{background:#d4ff5a!important;}
+.btn-play.playing{background:var(--accent2)!important;border-color:var(--accent2)!important;}
+.settings-row{display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:12px;flex-wrap:wrap;}
+.settings-row label{font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);}
+select{background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-family:'DM Mono',monospace;font-size:11px;padding:6px 10px;border-radius:6px;cursor:pointer;outline:none;}
+.loop-btn{font-size:12px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);}
+.loop-btn.active{border-color:var(--accent2);color:var(--accent2);background:#072a24;}
+.empty-state{text-align:center;color:var(--muted);font-size:13px;line-height:2.2;padding:20px;}
+.month-block{display:flex;flex-direction:column;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;}
+.month-header{display:flex;align-items:center;gap:10px;margin-bottom:4px;}
+.month-title{font-family:'DM Mono',monospace;font-size:12px;letter-spacing:2px;color:#f0c060;text-transform:uppercase;}
+.btn-month-play{background:#2a1f00;color:#f0c060;border:1px solid #f0c060;font-size:11px;padding:5px 12px;}
+.btn-month-play:hover{background:#3d2e00;}
+.group-list{display:flex;flex-direction:column;gap:14px;}
+</style>
+</head>
+<body>
+<header><h1>單字播放器</h1><span>Vocab Player</span></header>
+<div class="container">
+  <div class="tabs">
+    <button class="tab-btn" id="tab-import" onclick="showTab('import')">➕ 匯入</button>
+    <button class="tab-btn" id="tab-manage" onclick="showTab('manage')">📦 管理</button>
+    <button class="tab-btn" id="tab-play" onclick="showTab('play')">🎵 播放清單</button>
+  </div>
+
+  <div class="panel" id="panel-import">
+    <h2>匯入單字</h2>
+    <input type="text" id="inp-group-label" placeholder="命名這組單字  e.g. 第 1 天 / Day 1 / 日常動作">
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <label style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);">第</label>
+        <input type="number" id="inp-month" min="1" value="1" style="width:56px;text-align:center;">
+        <label style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);">月</label>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <label style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);">第</label>
+        <input type="number" id="inp-week" min="1" value="1" style="width:56px;text-align:center;">
+        <label style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);">週</label>
+      </div>
+    </div>
+    <textarea id="inp-bulk" placeholder="貼上從 Claude 複製的單字表（支援合併格式與 Tab 格式）"></textarea>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="importBulk()">匯入</button>
+      <button class="btn-ghost" onclick="document.getElementById('inp-bulk').value=''">清除</button>
+    </div>
+    <div class="result-msg" id="bulk-result"></div>
+  </div>
+
+  <div class="panel" id="panel-manage" style="display:none">
+    <h2>單字組管理</h2>
+    <div class="group-list" id="group-list"></div>
+  </div>
+
+  <div class="panel" id="panel-play" style="display:none">
+    <h2>播放清單</h2>
+    <div id="playlist"></div>
+  </div>
+
+  <div class="player">
+    <div class="now-playing" id="now-playing">
+      <div style="font-size:28px">🎧</div>
+      <div class="now-label">匯入單字後選擇播放</div>
+    </div>
+    <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+    <div class="settings-row">
+      <label>速度</label>
+      <select id="speed-select" onchange="updateSpeed()">
+        <option value="0.7">0.7x 慢</option>
+        <option value="0.85">0.85x</option>
+        <option value="1" selected>1.0x</option>
+        <option value="1.2">1.2x</option>
+      </select>
+      <button class="loop-btn" id="loop-btn" onclick="toggleLoop()">🔁 循環</button>
+      <button class="loop-btn" onclick="document.getElementById('voice-panel').style.display=document.getElementById('voice-panel').style.display==='none'?'':'none'">🎙 聲音</button>
+    </div>
+    <div id="voice-panel" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-top:4px;">
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <label style="font-family:'DM Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--muted);">英文聲音</label>
+          <div style="display:flex;gap:6px;">
+            <select id="sel-en" style="flex:1;font-size:11px;"></select>
+            <button class="btn-ghost" style="font-size:11px;padding:6px 10px;white-space:nowrap;" onclick="testVoice('en')">試聽</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <label style="font-family:'DM Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--muted);">中文聲音</label>
+          <div style="display:flex;gap:6px;">
+            <select id="sel-zh" style="flex:1;font-size:11px;"></select>
+            <button class="btn-ghost" style="font-size:11px;padding:6px 10px;white-space:nowrap;" onclick="testVoice('zh')">試聽</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="btn-ctrl" onclick="prevWord()">⏮</button>
+      <button class="btn-ctrl btn-play" id="btn-play" onclick="togglePlay()">▶</button>
+      <button class="btn-ctrl" onclick="nextWord()">⏭</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>
