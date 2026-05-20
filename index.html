@@ -480,6 +480,19 @@ function parseWords(raw) {
       if (!word || !/[a-zA-Z]/.test(word)) continue;
       results.push({ word, zh, sentence, sentenceZh });
     }
+  } else if (nonEmpty.some(l => l.includes('|'))) {
+    // Pipe format: 1. word /phonetic/ pos zh | sentence | sentenceZh
+    for (const line of nonEmpty) {
+      const stripped = line.replace(/^\d+[.)\s]+/, '');
+      const parts = stripped.split('|').map(p => p.trim());
+      const first = parts[0];
+      const m = first.match(/^([a-zA-Z][a-zA-Z ]*?)\s*\/[^/]+\/\s*\w+\s+(.+)$/);
+      let word = '', zh = '';
+      if (m) { word = m[1].trim(); zh = m[2].trim(); }
+      else { const wm = first.match(/^([a-zA-Z][a-zA-Z ]*)/); word = wm ? wm[1].trim() : ''; }
+      if (!word) continue;
+      results.push({ word, zh, sentence: parts[1]||'', sentenceZh: parts[2]||'' });
+    }
   } else if (lines.some(l => l === '')) {
     const blocks = raw.split(/\n\s*\n/).map(b => b.trim()).filter(b => b);
     for (const block of blocks) {
